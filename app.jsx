@@ -9,6 +9,10 @@ if (!RechartsGlobal) {
 }
 const Recharts = RechartsGlobal || {};           // fallback para evitar quebra na primeira linha
 
+const {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  Legend, CartesianGrid, ReferenceLine, ReferenceDot,
+} = Recharts;
 // Pega componentes do bundle UMD do Recharts
 const {
   LineChart,
@@ -519,4 +523,5 @@ function IVCalculator() {
 // Monta o app
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<IVCalculator />);
+
 
