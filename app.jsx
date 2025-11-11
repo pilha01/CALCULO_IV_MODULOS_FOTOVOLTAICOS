@@ -13,19 +13,6 @@ const {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   Legend, CartesianGrid, ReferenceLine, ReferenceDot,
 } = Recharts;
-// Pega componentes do bundle UMD do Recharts
-const {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-  CartesianGrid,
-  ReferenceLine,
-  ReferenceDot,
-} = Recharts;
 
 /**
  * Simulador Interativo Curva I–V (1 diodo + Rs + Rsh) – ELGIN ELG590-M72HEP
