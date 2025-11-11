@@ -1,380 +1,406 @@
-/* @jsx React.createElement */
-/* @jsxFrag React.Fragment */
-const { useMemo, useState, useEffect, useRef } = React;
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simulador Curva I–V • ELGIN ELG590-M72HEP</title>
 
-// ===== Constantes físicas =====
-const q = 1.602176634e-19;
-const k = 1.380649e-23;
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
 
-// ===== Util =====
-const colorAt = (idx, total) => `hsl(${Math.round((idx / Math.max(total,1)) * 360)},70%,45%)`;
+    <!-- React 18 + ReactDOM (UMD) -->
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
 
-const Section = ({ title, children }) => (
-  <div className="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
-    <h2 className="text-emerald-700 font-semibold mb-3">{title}</h2>
-    {children}
-  </div>
-);
+    <!-- Chart.js (UMD) -->
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
 
-const Label = ({ children }) => <label className="text-sm text-slate-600">{children}</label>;
+    <!-- Babel Standalone para compilar JSX inline -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-emerald-50">
+    <div id="root"></div>
 
-const NumberInput = ({ value, onChange, min, max, step = 0.01, suffix, className = "" }) => (
-  <div className={`flex items-center gap-2 ${className}`}>
-    <input
-      type="number"
-      value={Number.isFinite(value) ? value : 0}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      min={min} max={max} step={step}
-      className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-300"
-    />
-    {suffix && <span className="text-slate-500 text-sm w-14 text-right">{suffix}</span>}
-  </div>
-);
+    <!-- App React (JSX inline) -->
+    <script type="text/babel" data-presets="env,react">
+      /* @jsx React.createElement */
+      /* @jsxFrag React.Fragment */
+      const { useMemo, useState, useEffect, useRef } = React;
 
-// ===== Modelo elétrico (1 diodo + Rs + Rsh) =====
-function useIVModel(params) {
-  const {
-    vocRef, iscRef, vmppRef, imppRef, area,
-    irr, tempC, n, rs, rsh, cellsSeries, points,
-  } = params;
+      // ===== Constantes físicas =====
+      const q = 1.602176634e-19;
+      const k = 1.380649e-23;
 
-  const Gref = 1000, Tref = 25;
-  const alphaIsc = 0.046 / 100;
-  const betaVoc  = -0.26 / 100;
+      // ===== Util =====
+      const colorAt = (idx, total) => `hsl(${Math.round((idx / Math.max(total,1)) * 360)},70%,45%)`;
 
-  const adjIsc = (G, Tc) => iscRef * (G / Gref) * (1 + alphaIsc * (Tc - Tref));
-  const adjVoc = (G, Tc) => {
-    const dT = Tc - Tref;
-    const thermal = vocRef * (1 + betaVoc * dT);
-    const nvt = n * ((k * (Tc + 273.15)) / q) * Math.max(cellsSeries, 1);
-    const logTerm = nvt * Math.log(Math.max(G, 1) / Gref);
-    return Math.max(thermal + logTerm, 0.1);
-  };
+      const Section = ({ title, children }) => (
+        <div className="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+          <h2 className="text-emerald-700 font-semibold mb-3">{title}</h2>
+          {children}
+        </div>
+      );
 
-  function computeCurve(G, Tc) {
-    const Tkelvin = Tc + 273.15;
-    const VtC = (k * Tkelvin) / q;
-    const nvt = n * VtC * Math.max(cellsSeries, 1);
-    const IL  = adjIsc(G, Tc);
-    const VocG = adjVoc(G, Tc);
+      const Label = ({ children }) => <label className="text-sm text-slate-600">{children}</label>;
 
-    const Io = (() => {
-      const denom = Math.exp(Math.max(VocG, 0) / Math.max(nvt, 1e-9)) - 1;
-      const numer = IL - VocG / Math.max(rsh, 1e-6);
-      return Math.max(denom > 0 ? numer / denom : 0, 1e-12);
-    })();
+      const NumberInput = ({ value, onChange, min, max, step = 0.01, suffix, className = "" }) => (
+        <div className={`flex items-center gap-2 ${className}`}>
+          <input
+            type="number"
+            value={Number.isFinite(value) ? value : 0}
+            onChange={(e) => onChange(parseFloat(e.target.value))}
+            min={min} max={max} step={step}
+            className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+          />
+          {suffix && <span className="text-slate-500 text-sm w-14 text-right">{suffix}</span>}
+        </div>
+      );
 
-    function solveI(V, Istart) {
-      let I = Math.min(Math.max(Istart, 0), Math.max(IL, 0));
-      for (let iter = 0; iter < 80; iter++) {
-        const arg = (V + I * rs) / Math.max(nvt, 1e-9);
-        const expArg = Math.exp(Math.min(Math.max(arg, -50), 50));
-        const F  = I - IL + Io * (expArg - 1) + (V + I * rs) / Math.max(rsh, 1e-9);
-        const dF = 1 + Io * expArg * (rs / Math.max(nvt, 1e-9)) + rs / Math.max(rsh, 1e-9);
-        const step = F / Math.max(dF, 1e-12);
-        I -= step;
-        if (!Number.isFinite(I)) { I = 0; break; }
-        if (Math.abs(step) < 1e-8) break;
-        if (I < -0.1) I = 0;
-        if (I > IL * 1.2) I = IL * 1.2;
+      // ===== Modelo elétrico (1 diodo + Rs + Rsh) =====
+      function useIVModel(params) {
+        const {
+          vocRef, iscRef, vmppRef, imppRef, area,
+          irr, tempC, n, rs, rsh, cellsSeries, points,
+        } = params;
+
+        const Gref = 1000, Tref = 25;
+        const alphaIsc = 0.046 / 100;
+        const betaVoc  = -0.26 / 100;
+
+        const adjIsc = (G, Tc) => iscRef * (G / Gref) * (1 + alphaIsc * (Tc - Tref));
+        const adjVoc = (G, Tc) => {
+          const dT = Tc - Tref;
+          const thermal = vocRef * (1 + betaVoc * dT);
+          const nvt = n * ((k * (Tc + 273.15)) / q) * Math.max(cellsSeries, 1);
+          const logTerm = nvt * Math.log(Math.max(G, 1) / Gref);
+          return Math.max(thermal + logTerm, 0.1);
+        };
+
+        function computeCurve(G, Tc) {
+          const Tkelvin = Tc + 273.15;
+          const VtC = (k * Tkelvin) / q;
+          const nvt = n * VtC * Math.max(cellsSeries, 1);
+          const IL  = adjIsc(G, Tc);
+          const VocG = adjVoc(G, Tc);
+
+          const Io = (() => {
+            const denom = Math.exp(Math.max(VocG, 0) / Math.max(nvt, 1e-9)) - 1;
+            const numer = IL - VocG / Math.max(rsh, 1e-6);
+            return Math.max(denom > 0 ? numer / denom : 0, 1e-12);
+          })();
+
+          function solveI(V, Istart) {
+            let I = Math.min(Math.max(Istart, 0), Math.max(IL, 0));
+            for (let iter = 0; iter < 80; iter++) {
+              const arg = (V + I * rs) / Math.max(nvt, 1e-9);
+              const expArg = Math.exp(Math.min(Math.max(arg, -50), 50));
+              const F  = I - IL + Io * (expArg - 1) + (V + I * rs) / Math.max(rsh, 1e-9);
+              const dF = 1 + Io * expArg * (rs / Math.max(nvt, 1e-9)) + rs / Math.max(rsh, 1e-9);
+              const step = F / Math.max(dF, 1e-12);
+              I -= step;
+              if (!Number.isFinite(I)) { I = 0; break; }
+              if (Math.abs(step) < 1e-8) break;
+              if (I < -0.1) I = 0;
+              if (I > IL * 1.2) I = IL * 1.2;
+            }
+            return Math.max(I, 0);
+          }
+
+          const Vmax = Math.max(adjVoc(G, Tc), vocRef) * 1.02;
+          const dV = Vmax / Math.max(points, 10);
+          const pts = [];
+          let Iprev = IL;
+          for (let i = 0; i <= points; i++) {
+            const V = i * dV;
+            const I = solveI(V, Iprev);
+            pts.push({ V, I, P: V * I });
+            Iprev = I;
+          }
+          return { pts, IL, VocG, Vmax };
+        }
+
+        const base = React.useMemo(() => computeCurve(irr, tempC),
+          [irr, tempC, rs, rsh, n, cellsSeries, points, vocRef, iscRef]);
+
+        const mpp = React.useMemo(
+          () => base.pts.reduce((b, p) => (p.P > b.P ? p : b), { V: 0, I: 0, P: 0 }),
+          [base.pts]
+        );
+        const Pin = irr * area;
+        const eff = Pin > 0 ? mpp.P / Pin : 0;
+
+        return { computeCurve, base, mpp, eff, adjIsc, adjVoc };
       }
-      return Math.max(I, 0);
-    }
 
-    const Vmax = Math.max(adjVoc(G, Tc), vocRef) * 1.02;
-    const dV = Vmax / Math.max(points, 10);
-    const pts = [];
-    let Iprev = IL;
-    for (let i = 0; i <= points; i++) {
-      const V = i * dV;
-      const I = solveI(V, Iprev);
-      pts.push({ V, I, P: V * I });
-      Iprev = I;
-    }
-    return { pts, IL, VocG, Vmax };
-  }
+      // ===== Hook para Chart.js =====
+      function useChart(canvasRef, configBuilder, deps) {
+        const chartRef = useRef(null);
+        useEffect(() => {
+          const ctx = canvasRef.current?.getContext?.('2d');
+          if (!ctx) return;
+          const cfg = configBuilder();
+          if (chartRef.current) { chartRef.current.destroy(); }
+          chartRef.current = new Chart(ctx, cfg);
+          return () => chartRef.current && chartRef.current.destroy();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, deps);
+      }
 
-  const base = useMemo(() => computeCurve(irr, tempC),
-    [irr, tempC, rs, rsh, n, cellsSeries, points, vocRef, iscRef]);
+      // ===== App =====
+      function App() {
+        // Parâmetros do módulo/condição
+        const [vocRef, setVocRef] = useState(52.0);
+        const [iscRef, setIscRef] = useState(14.31);
+        const [vmppRef, setVmppRef] = useState(43.55);
+        const [imppRef, setImppRef] = useState(13.55);
+        const [area,   setArea]   = useState(2.648);
+        const [irr,    setIrr]    = useState(1000);
+        const [tempC,  setTempC]  = useState(25);
 
-  const mpp = useMemo(
-    () => base.pts.reduce((b, p) => (p.P > b.P ? p : b), { V: 0, I: 0, P: 0 }),
-    [base.pts]
-  );
-  const Pin = irr * area;
-  const eff = Pin > 0 ? mpp.P / Pin : 0;
+        const [n, setN]     = useState(1.3);
+        const [rs, setRs]   = useState(0.2);
+        const [rsh, setRsh] = useState(1000);
+        const [cellsSeries, setCellsSeries] = useState(144);
+        const [points, setPoints] = useState(140);
 
-  return { computeCurve, base, mpp, eff, adjIsc, adjVoc };
-}
+        const model = useIVModel({
+          vocRef, iscRef, vmppRef, imppRef, area,
+          irr, tempC, n, rs, rsh, cellsSeries, points,
+        });
 
-// ===== Chart.js helper =====
-function useChart(canvasRef, configBuilder, deps) {
-  const chartRef = useRef(null);
-  useEffect(() => {
-    const ctx = canvasRef.current?.getContext?.('2d');
-    if (!ctx) return;
-    const cfg = configBuilder();
-    if (chartRef.current) { chartRef.current.destroy(); }
-    chartRef.current = new Chart(ctx, cfg);
-    return () => chartRef.current && chartRef.current.destroy();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-}
-
-// ===== App =====
-function App() {
-  // Parâmetros do módulo/condição
-  const [vocRef, setVocRef] = useState(52.0);
-  const [iscRef, setIscRef] = useState(14.31);
-  const [vmppRef, setVmppRef] = useState(43.55);
-  const [imppRef, setImppRef] = useState(13.55);
-  const [area,   setArea]   = useState(2.648);
-  const [irr,    setIrr]    = useState(1000);
-  const [tempC,  setTempC]  = useState(25);
-
-  const [n, setN]     = useState(1.3);
-  const [rs, setRs]   = useState(0.2);
-  const [rsh, setRsh] = useState(1000);
-  const [cellsSeries, setCellsSeries] = useState(144);
-  const [points, setPoints] = useState(140);
-
-  const model = useIVModel({
-    vocRef, iscRef, vmppRef, imppRef, area,
-    irr, tempC, n, rs, rsh, cellsSeries, points,
-  });
-
-  // ===== CHART 1: Curva base (I–V e P–V) em um gráfico (dois eixos Y) =====
-  const baseCanvasRef = useRef(null);
-  useChart(
-    baseCanvasRef,
-    () => {
-      const xs = model.base.pts.map(p => p.V);
-      return {
-        type: 'line',
-        data: {
-          labels: xs,
-          datasets: [
-            {
-              label: 'I (A)',
-              data: model.base.pts.map(p => p.I),
-              yAxisID: 'yI',
-              borderWidth: 2,
-              tension: 0.15,
-            },
-            {
-              label: 'P (W)',
-              data: model.base.pts.map(p => p.P),
-              yAxisID: 'yP',
-              borderWidth: 2,
-              tension: 0.15,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
-          interaction: { mode: 'index', intersect: false },
-          scales: {
-            x: { title: { display: true, text: 'Tensão (V)' } },
-            yI: { type: 'linear', position: 'left', title: { display: true, text: 'Corrente (A)' } },
-            yP: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Potência (W)' } },
+        // ===== CHART 1: Curva base (I–V e P–V) =====
+        const baseCanvasRef = useRef(null);
+        useChart(
+          baseCanvasRef,
+          () => {
+            const xs = model.base.pts.map(p => p.V);
+            return {
+              type: 'line',
+              data: {
+                labels: xs,
+                datasets: [
+                  {
+                    label: 'I (A)',
+                    data: model.base.pts.map(p => p.I),
+                    yAxisID: 'yI',
+                    borderWidth: 2,
+                    tension: 0.15,
+                  },
+                  {
+                    label: 'P (W)',
+                    data: model.base.pts.map(p => p.P),
+                    yAxisID: 'yP',
+                    borderWidth: 2,
+                    tension: 0.15,
+                  },
+                ],
+              },
+              options: {
+                responsive: true,
+                animation: false,
+                plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                  x: { title: { display: true, text: 'Tensão (V)' } },
+                  yI: { type: 'linear', position: 'left', title: { display: true, text: 'Corrente (A)' } },
+                  yP: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Potência (W)' } },
+                },
+              },
+            };
           },
-        },
-      };
-    },
-    [model.base.pts]
-  );
+          [model.base.pts]
+        );
 
-  // ===== CHART 2: Séries por irradiância (25°C) =====
-  const irrCanvasRef = useRef(null);
-  const irrOrder = [1000, 800, 600, 400, 200];
-  const irrSeries = useMemo(
-    () => irrOrder.map(g => ({ g, curve: model.computeCurve(g, 25) })),
-    // dependências: mudança no modelo que altere curvas
-    [n, rs, rsh, cellsSeries, points, vocRef, iscRef]
-  );
-  useChart(
-    irrCanvasRef,
-    () => {
-      const vmax = Math.max(...irrSeries.map(s => s.curve.Vmax));
-      const baseX = Array.from({ length: 121 }, (_, i) => (i / 120) * vmax);
-      return {
-        type: 'line',
-        data: {
-          labels: baseX.map(v => +v.toFixed(2)),
-          datasets: irrSeries.map((s, idx, arr) => ({
-            label: `${s.g} W/m²`,
-            data: baseX.map(x => {
-              // interpola por busca do ponto mais próximo
-              const pts = s.curve.pts;
-              let j = Math.min(Math.floor((x / vmax) * pts.length), pts.length - 1);
-              if (j < 0) j = 0;
-              return pts[j].I;
-            }),
-            borderWidth: 2,
-            tension: 0.15,
-            borderColor: colorAt(idx, arr.length),
-          })),
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          plugins: { legend: { position: 'top' } },
-          scales: {
-            x: { title: { display: true, text: 'Tensão (V)' } },
-            y: { title: { display: true, text: 'Corrente (A)' } },
+        // ===== CHART 2: Séries por irradiância (25°C) =====
+        const irrCanvasRef = useRef(null);
+        const irrOrder = [1000, 800, 600, 400, 200];
+        const irrSeries = useMemo(
+          () => irrOrder.map(g => ({ g, curve: model.computeCurve(g, 25) })),
+          [n, rs, rsh, cellsSeries, points, vocRef, iscRef]
+        );
+        useChart(
+          irrCanvasRef,
+          () => {
+            const vmax = Math.max(...irrSeries.map(s => s.curve.Vmax));
+            const baseX = Array.from({ length: 121 }, (_, i) => (i / 120) * vmax);
+            return {
+              type: 'line',
+              data: {
+                labels: baseX.map(v => +v.toFixed(2)),
+                datasets: irrSeries.map((s, idx, arr) => ({
+                  label: `${s.g} W/m²`,
+                  data: baseX.map(x => {
+                    const pts = s.curve.pts;
+                    let j = Math.min(Math.floor((x / vmax) * pts.length), pts.length - 1);
+                    if (j < 0) j = 0;
+                    return pts[j].I;
+                  }),
+                  borderWidth: 2,
+                  tension: 0.15,
+                  borderColor: colorAt(idx, arr.length),
+                })),
+              },
+              options: {
+                responsive: true,
+                animation: false,
+                plugins: { legend: { position: 'top' } },
+                scales: {
+                  x: { title: { display: true, text: 'Tensão (V)' } },
+                  y: { title: { display: true, text: 'Corrente (A)' } },
+                },
+              },
+            };
           },
-        },
-      };
-    },
-    [irrSeries]
-  );
+          [irrSeries]
+        );
 
-  // ===== CHART 3: Séries por temperatura (G=1000 W/m²) =====
-  const tempCanvasRef = useRef(null);
-  const tempOrder = [75, 65, 55, 45, 35, 25];
-  const tempSeries = useMemo(
-    () => tempOrder.map(t => ({ t, curve: model.computeCurve(1000, t) })),
-    [n, rs, rsh, cellsSeries, points, vocRef, iscRef]
-  );
-  useChart(
-    tempCanvasRef,
-    () => {
-      const vmax = Math.max(...tempSeries.map(s => s.curve.Vmax));
-      const baseX = Array.from({ length: 121 }, (_, i) => (i / 120) * vmax);
-      return {
-        type: 'line',
-        data: {
-          labels: baseX.map(v => +v.toFixed(2)),
-          datasets: tempSeries.map((s, idx, arr) => ({
-            label: `Temp=${s.t}°C`,
-            data: baseX.map(x => {
-              const pts = s.curve.pts;
-              let j = Math.min(Math.floor((x / vmax) * pts.length), pts.length - 1);
-              if (j < 0) j = 0;
-              return pts[j].I;
-            }),
-            borderWidth: 2,
-            tension: 0.15,
-            borderColor: colorAt(idx, arr.length),
-          })),
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          plugins: { legend: { position: 'top' } },
-          scales: {
-            x: { title: { display: true, text: 'Tensão (V)' } },
-            y: { title: { display: true, text: 'Corrente (A)' } },
+        // ===== CHART 3: Séries por temperatura (G=1000 W/m²) =====
+        const tempCanvasRef = useRef(null);
+        const tempOrder = [75, 65, 55, 45, 35, 25];
+        const tempSeries = useMemo(
+          () => tempOrder.map(t => ({ t, curve: model.computeCurve(1000, t) })),
+          [n, rs, rsh, cellsSeries, points, vocRef, iscRef]
+        );
+        useChart(
+          tempCanvasRef,
+          () => {
+            const vmax = Math.max(...tempSeries.map(s => s.curve.Vmax));
+            const baseX = Array.from({ length: 121 }, (_, i) => (i / 120) * vmax);
+            return {
+              type: 'line',
+              data: {
+                labels: baseX.map(v => +v.toFixed(2)),
+                datasets: tempSeries.map((s, idx, arr) => ({
+                  label: `Temp=${s.t}°C`,
+                  data: baseX.map(x => {
+                    const pts = s.curve.pts;
+                    let j = Math.min(Math.floor((x / vmax) * pts.length), pts.length - 1);
+                    if (j < 0) j = 0;
+                    return pts[j].I;
+                  }),
+                  borderWidth: 2,
+                  tension: 0.15,
+                  borderColor: colorAt(idx, arr.length),
+                })),
+              },
+              options: {
+                responsive: true,
+                animation: false,
+                plugins: { legend: { position: 'top' } },
+                scales: {
+                  x: { title: { display: true, text: 'Tensão (V)' } },
+                  y: { title: { display: true, text: 'Corrente (A)' } },
+                },
+              },
+            };
           },
-        },
-      };
-    },
-    [tempSeries]
-  );
+          [tempSeries]
+        );
 
-  // KPIs
-  const iscAdj = useMemo(() => model.adjIsc(irr, tempC), [irr, tempC]);
-  const vocAdj = useMemo(() => model.adjVoc(irr, tempC), [irr, tempC]);
-  const ff = useMemo(() => model.mpp.P / Math.max(vocAdj * iscAdj, 1e-9), [model.mpp, vocAdj, iscAdj]);
+        // KPIs
+        const iscAdj = useMemo(() => model.adjIsc(irr, tempC), [irr, tempC]);
+        const vocAdj = useMemo(() => model.adjVoc(irr, tempC), [irr, tempC]);
+        const ff = useMemo(() => model.mpp.P / Math.max(vocAdj * iscAdj, 1e-9), [model.mpp, vocAdj, iscAdj]);
 
-  return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-emerald-50 via-teal-50 to-white text-slate-800">
-      <header className="px-6 md:px-10 py-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-700">
-            Simulador Curva I–V • ELGIN ELG590-M72HEP
-          </h1>
-          <div className="hidden md:flex items-center gap-2 text-sm text-slate-500">
-            <span className="inline-block h-3 w-3 rounded-full bg-emerald-400 animate-pulse" /> cálculo em tempo real
+        return (
+          <div className="min-h-screen w-full bg-gradient-to-b from-emerald-50 via-teal-50 to-white text-slate-800">
+            <header className="px-6 md:px-10 py-6">
+              <div className="flex items-center justify-between">
+                <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-700">
+                  Simulador Curva I–V • ELGIN ELG590-M72HEP
+                </h1>
+                <div className="hidden md:flex items-center gap-2 text-sm text-slate-500">
+                  <span className="inline-block h-3 w-3 rounded-full bg-emerald-400 animate-pulse" /> cálculo em tempo real
+                </div>
+              </div>
+              <p className="mt-1 text-sm text-slate-600">Ajuste os parâmetros à esquerda. Os gráficos e indicadores respondem instantaneamente.</p>
+            </header>
+
+            <main className="px-6 md:px-10 pb-16 grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Painel lateral */}
+              <div className="lg:col-span-1 space-y-4">
+                <Section title="Condições de operação (curva base)">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>Irradiância</Label><NumberInput value={irr} onChange={setIrr} min={1} max={1200} step={1} suffix="W/m²" /></div>
+                    <div><Label>Temperatura módulo</Label><NumberInput value={tempC} onChange={setTempC} min={-20} max={85} step={0.1} suffix="°C" /></div>
+                  </div>
+                </Section>
+
+                <Section title="Parâmetros do módulo (STC)">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>Voc_ref</Label><NumberInput value={vocRef} onChange={setVocRef} min={0} max={100} step={0.01} suffix="V" /></div>
+                    <div><Label>Isc_ref</Label><NumberInput value={iscRef} onChange={setIscRef} min={0} max={30} step={0.001} suffix="A" /></div>
+                    <div><Label>Vmpp_ref</Label><NumberInput value={vmppRef} onChange={setVmppRef} min={0} max={100} step={0.01} suffix="V" /></div>
+                    <div><Label>Impp_ref</Label><NumberInput value={imppRef} onChange={setImppRef} min={0} max={30} step={0.001} suffix="A" /></div>
+                    <div className="col-span-2"><Label>Área</Label><NumberInput value={area} onChange={setArea} min={0.1} max={4} step={0.001} suffix="m²" /></div>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">Ns=144 • αIsc=+0,046 %/°C • βVoc=−0,26 %/°C</p>
+                </Section>
+
+                <Section title="Modelo elétrico (1 diodo)">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>n</Label><NumberInput value={n} onChange={setN} min={1} max={2} step={0.01} /></div>
+                    <div><Label>Rs</Label><NumberInput value={rs} onChange={setRs} min={0} max={1} step={0.001} suffix="Ω" /></div>
+                    <div><Label>Rsh</Label><NumberInput value={rsh} onChange={setRsh} min={1} max={50000} step={1} suffix="Ω" /></div>
+                    <div><Label>Células (Ns)</Label><NumberInput value={cellsSeries} onChange={setCellsSeries} min={36} max={200} step={1} /></div>
+                    <div><Label>Pontos</Label><NumberInput value={points} onChange={setPoints} min={50} max={400} step={1} /></div>
+                  </div>
+                </Section>
+
+                <Section title="Indicadores (curva base)">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-gradient-to-br from-emerald-50 to-white border border-emerald-100 rounded-2xl p-4">
+                      <div className="text-xs uppercase text-emerald-600">Ponto MPP</div>
+                      <div className="text-sm">Vmpp ≈ <b>{model.mpp.V.toFixed(2)} V</b></div>
+                      <div className="text-sm">Impp ≈ <b>{model.mpp.I.toFixed(2)} A</b></div>
+                      <div className="text-lg font-bold text-emerald-700">Pmax ≈ {model.mpp.P.toFixed(1)} W</div>
+                    </div>
+                    <div className="bg-gradient-to-br from-cyan-50 to-white border border-cyan-100 rounded-2xl p-4">
+                      <div className="text-xs uppercase text-cyan-600">Eficiência</div>
+                      <div className="text-2xl font-bold text-cyan-700">{(model.eff * 100).toFixed(2)}%</div>
+                      <div className="text-xs text-slate-500">Pin ≈ {Math.round(irr * area)} W</div>
+                    </div>
+                    <div className="bg-gradient-to-br from-teal-50 to-white border border-teal-100 rounded-2xl p-4 col-span-2">
+                      <div className="text-xs uppercase text-teal-600">Limites</div>
+                      <div className="text-sm">Voc ≈ <b>{model.base.VocG.toFixed(2)} V</b></div>
+                      <div className="text-sm">Isc ≈ <b>{model.base.IL.toFixed(2)} A</b></div>
+                      <div className="text-sm">FF ≈ <b>{(model.mpp.P / Math.max(model.base.VocG * model.base.IL, 1e-9) * 100).toFixed(1)}%</b></div>
+                    </div>
+                  </div>
+                </Section>
+              </div>
+
+              {/* Gráficos */}
+              <div className="lg:col-span-2 space-y-4">
+                <Section title="Curva base: I–V e P–V (tempo real)">
+                  <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-80">
+                    <canvas ref={baseCanvasRef} className="w-full h-full"></canvas>
+                  </div>
+                </Section>
+
+                <Section title="I–V em diferentes irradiâncias (T=25°C)">
+                  <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-96">
+                    <canvas ref={irrCanvasRef} className="w-full h-full"></canvas>
+                  </div>
+                </Section>
+
+                <Section title="I–V em diferentes temperaturas (G=1000 W/m²)">
+                  <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-96">
+                    <canvas ref={tempCanvasRef} className="w-full h-full"></canvas>
+                  </div>
+                </Section>
+              </div>
+            </main>
+
+            <footer className="px-6 md:px-10 py-6 text-xs text-slate-500 text-center">
+              React + Chart.js • Tailwind • 1-diodo (Newton) • Projeto educacional — Gustavo Santos Silva (2025)
+            </footer>
           </div>
-        </div>
-        <p className="mt-1 text-sm text-slate-600">Ajuste os parâmetros à esquerda. Os gráficos e indicadores respondem instantaneamente.</p>
-      </header>
+        );
+      }
 
-      <main className="px-6 md:px-10 pb-16 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Painel lateral */}
-        <div className="lg:col-span-1 space-y-4">
-          <Section title="Condições de operação (curva base)">
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>Irradiância</Label><NumberInput value={irr} onChange={setIrr} min={1} max={1200} step={1} suffix="W/m²" /></div>
-              <div><Label>Temperatura módulo</Label><NumberInput value={tempC} onChange={setTempC} min={-20} max={85} step={0.1} suffix="°C" /></div>
-            </div>
-          </Section>
-
-          <Section title="Parâmetros do módulo (STC)">
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>Voc_ref</Label><NumberInput value={vocRef} onChange={setVocRef} min={0} max={100} step={0.01} suffix="V" /></div>
-              <div><Label>Isc_ref</Label><NumberInput value={iscRef} onChange={setIscRef} min={0} max={30} step={0.001} suffix="A" /></div>
-              <div><Label>Vmpp_ref</Label><NumberInput value={vmppRef} onChange={setVmppRef} min={0} max={100} step={0.01} suffix="V" /></div>
-              <div><Label>Impp_ref</Label><NumberInput value={imppRef} onChange={setImppRef} min={0} max={30} step={0.001} suffix="A" /></div>
-              <div className="col-span-2"><Label>Área</Label><NumberInput value={area} onChange={setArea} min={0.1} max={4} step={0.001} suffix="m²" /></div>
-            </div>
-            <p className="text-xs text-slate-500 mt-2">Ns=144 • αIsc=+0,046 %/°C • βVoc=−0,26 %/°C</p>
-          </Section>
-
-          <Section title="Modelo elétrico (1 diodo)">
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>n</Label><NumberInput value={n} onChange={setN} min={1} max={2} step={0.01} /></div>
-              <div><Label>Rs</Label><NumberInput value={rs} onChange={setRs} min={0} max={1} step={0.001} suffix="Ω" /></div>
-              <div><Label>Rsh</Label><NumberInput value={rsh} onChange={setRsh} min={1} max={50000} step={1} suffix="Ω" /></div>
-              <div><Label>Células (Ns)</Label><NumberInput value={cellsSeries} onChange={setCellsSeries} min={36} max={200} step={1} /></div>
-              <div><Label>Pontos</Label><NumberInput value={points} onChange={setPoints} min={50} max={400} step={1} /></div>
-            </div>
-          </Section>
-
-          <Section title="Indicadores (curva base)">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-gradient-to-br from-emerald-50 to-white border border-emerald-100 rounded-2xl p-4">
-                <div className="text-xs uppercase text-emerald-600">Ponto MPP</div>
-                <div className="text-sm">Vmpp ≈ <b>{model.mpp.V.toFixed(2)} V</b></div>
-                <div className="text-sm">Impp ≈ <b>{model.mpp.I.toFixed(2)} A</b></div>
-                <div className="text-lg font-bold text-emerald-700">Pmax ≈ {model.mpp.P.toFixed(1)} W</div>
-              </div>
-              <div className="bg-gradient-to-br from-cyan-50 to-white border border-cyan-100 rounded-2xl p-4">
-                <div className="text-xs uppercase text-cyan-600">Eficiência</div>
-                <div className="text-2xl font-bold text-cyan-700">{(model.eff * 100).toFixed(2)}%</div>
-                <div className="text-xs text-slate-500">Pin ≈ {Math.round(irr * area)} W</div>
-              </div>
-              <div className="bg-gradient-to-br from-teal-50 to-white border border-teal-100 rounded-2xl p-4 col-span-2">
-                <div className="text-xs uppercase text-teal-600">Limites</div>
-                <div className="text-sm">Voc ≈ <b>{model.base.VocG.toFixed(2)} V</b></div>
-                <div className="text-sm">Isc ≈ <b>{model.base.IL.toFixed(2)} A</b></div>
-                <div className="text-sm">FF ≈ <b>{(ff * 100).toFixed(1)}%</b></div>
-              </div>
-            </div>
-          </Section>
-        </div>
-
-        {/* Gráficos */}
-        <div className="lg:col-span-2 space-y-4">
-          <Section title="Curva base: I–V e P–V (tempo real)">
-            <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-80">
-              <canvas ref={baseCanvasRef} className="w-full h-full"></canvas>
-            </div>
-          </Section>
-
-          <Section title="I–V em diferentes irradiâncias (T=25°C)">
-            <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-96">
-              <canvas ref={irrCanvasRef} className="w-full h-full"></canvas>
-            </div>
-          </Section>
-
-          <Section title="I–V em diferentes temperaturas (G=1000 W/m²)">
-            <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-96">
-              <canvas ref={tempCanvasRef} className="w-full h-full"></canvas>
-            </div>
-          </Section>
-        </div>
-      </main>
-
-      <footer className="px-6 md:px-10 py-6 text-xs text-slate-500 text-center">
-        React + Chart.js • Tailwind • 1-diodo (Newton) • Projeto educacional — Gustavo Santos Silva (2025)
-      </footer>
-    </div>
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
