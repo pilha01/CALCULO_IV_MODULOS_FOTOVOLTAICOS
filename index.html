@@ -12,19 +12,19 @@
     <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
 
-    <!-- PropTypes (necessário pro bundle UMD do Recharts) -->
+    <!-- PropTypes (necessário para Recharts UMD) -->
     <script crossorigin src="https://cdn.jsdelivr.net/npm/prop-types@15.8.1/prop-types.min.js"></script>
 
-    <!-- Recharts UMD (fixado) – jsDelivr -->
-    <script crossorigin src="https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js"></script>
+    <!-- Recharts UMD: **fixado em 1.8.5** (estável com Babel Standalone) -->
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/recharts@1.8.5/umd/Recharts.min.js"></script>
 
-    <!-- Babel Standalone (compila JSX no navegador) -->
+    <!-- Babel Standalone -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   </head>
   <body class="bg-emerald-50">
     <div id="root"></div>
 
-    <!-- App JSX (sem TypeScript, já que é .jsx) -->
+    <!-- App JSX -->
     <script type="text/babel" src="./app.jsx" data-presets="env,react"></script>
   </body>
 </html>
