@@ -1,380 +1,479 @@
-/* @jsx React.createElement */
-/* @jsxFrag React.Fragment */
-const { useMemo, useState, useEffect, useRef } = React;
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador Curva I–V Solar PV (GitHub Pages)</title>
+    <!-- Tailwind CSS CDN para estilização -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Plotly.js CDN para os gráficos complexos -->
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        /* Estilos básicos para garantir que o contêiner do gráfico seja flexível */
+        .chart-container {
+            min-height: 350px;
+        }
+        .Plotly .modebar {
+            background-color: transparent !important; /* Estilo para o modo claro */
+        }
+        .input-box {
+            @apply w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-300;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-b from-emerald-50 via-teal-50 to-white text-slate-800 font-sans">
 
-// ===== Constantes físicas =====
-const q = 1.602176634e-19;
-const k = 1.380649e-23;
-
-// ===== Util =====
-const colorAt = (idx, total) => `hsl(${Math.round((idx / Math.max(total,1)) * 360)},70%,45%)`;
-
-const Section = ({ title, children }) => (
-  <div className="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
-    <h2 className="text-emerald-700 font-semibold mb-3">{title}</h2>
-    {children}
-  </div>
-);
-
-const Label = ({ children }) => <label className="text-sm text-slate-600">{children}</label>;
-
-const NumberInput = ({ value, onChange, min, max, step = 0.01, suffix, className = "" }) => (
-  <div className={`flex items-center gap-2 ${className}`}>
-    <input
-      type="number"
-      value={Number.isFinite(value) ? value : 0}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      min={min} max={max} step={step}
-      className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-300"
-    />
-    {suffix && <span className="text-slate-500 text-sm w-14 text-right">{suffix}</span>}
-  </div>
-);
-
-// ===== Modelo elétrico (1 diodo + Rs + Rsh) =====
-function useIVModel(params) {
-  const {
-    vocRef, iscRef, vmppRef, imppRef, area,
-    irr, tempC, n, rs, rsh, cellsSeries, points,
-  } = params;
-
-  const Gref = 1000, Tref = 25;
-  const alphaIsc = 0.046 / 100;
-  const betaVoc  = -0.26 / 100;
-
-  const adjIsc = (G, Tc) => iscRef * (G / Gref) * (1 + alphaIsc * (Tc - Tref));
-  const adjVoc = (G, Tc) => {
-    const dT = Tc - Tref;
-    const thermal = vocRef * (1 + betaVoc * dT);
-    const nvt = n * ((k * (Tc + 273.15)) / q) * Math.max(cellsSeries, 1);
-    const logTerm = nvt * Math.log(Math.max(G, 1) / Gref);
-    return Math.max(thermal + logTerm, 0.1);
-  };
-
-  function computeCurve(G, Tc) {
-    const Tkelvin = Tc + 273.15;
-    const VtC = (k * Tkelvin) / q;
-    const nvt = n * VtC * Math.max(cellsSeries, 1);
-    const IL  = adjIsc(G, Tc);
-    const VocG = adjVoc(G, Tc);
-
-    const Io = (() => {
-      const denom = Math.exp(Math.max(VocG, 0) / Math.max(nvt, 1e-9)) - 1;
-      const numer = IL - VocG / Math.max(rsh, 1e-6);
-      return Math.max(denom > 0 ? numer / denom : 0, 1e-12);
-    })();
-
-    function solveI(V, Istart) {
-      let I = Math.min(Math.max(Istart, 0), Math.max(IL, 0));
-      for (let iter = 0; iter < 80; iter++) {
-        const arg = (V + I * rs) / Math.max(nvt, 1e-9);
-        const expArg = Math.exp(Math.min(Math.max(arg, -50), 50));
-        const F  = I - IL + Io * (expArg - 1) + (V + I * rs) / Math.max(rsh, 1e-9);
-        const dF = 1 + Io * expArg * (rs / Math.max(nvt, 1e-9)) + rs / Math.max(rsh, 1e-9);
-        const step = F / Math.max(dF, 1e-12);
-        I -= step;
-        if (!Number.isFinite(I)) { I = 0; break; }
-        if (Math.abs(step) < 1e-8) break;
-        if (I < -0.1) I = 0;
-        if (I > IL * 1.2) I = IL * 1.2;
-      }
-      return Math.max(I, 0);
-    }
-
-    const Vmax = Math.max(adjVoc(G, Tc), vocRef) * 1.02;
-    const dV = Vmax / Math.max(points, 10);
-    const pts = [];
-    let Iprev = IL;
-    for (let i = 0; i <= points; i++) {
-      const V = i * dV;
-      const I = solveI(V, Iprev);
-      pts.push({ V, I, P: V * I });
-      Iprev = I;
-    }
-    return { pts, IL, VocG, Vmax };
-  }
-
-  const base = useMemo(() => computeCurve(irr, tempC),
-    [irr, tempC, rs, rsh, n, cellsSeries, points, vocRef, iscRef]);
-
-  const mpp = useMemo(
-    () => base.pts.reduce((b, p) => (p.P > b.P ? p : b), { V: 0, I: 0, P: 0 }),
-    [base.pts]
-  );
-  const Pin = irr * area;
-  const eff = Pin > 0 ? mpp.P / Pin : 0;
-
-  return { computeCurve, base, mpp, eff, adjIsc, adjVoc };
-}
-
-// ===== Chart.js helper =====
-function useChart(canvasRef, configBuilder, deps) {
-  const chartRef = useRef(null);
-  useEffect(() => {
-    const ctx = canvasRef.current?.getContext?.('2d');
-    if (!ctx) return;
-    const cfg = configBuilder();
-    if (chartRef.current) { chartRef.current.destroy(); }
-    chartRef.current = new Chart(ctx, cfg);
-    return () => chartRef.current && chartRef.current.destroy();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-}
-
-// ===== App =====
-function App() {
-  // Parâmetros do módulo/condição
-  const [vocRef, setVocRef] = useState(52.0);
-  const [iscRef, setIscRef] = useState(14.31);
-  const [vmppRef, setVmppRef] = useState(43.55);
-  const [imppRef, setImppRef] = useState(13.55);
-  const [area,   setArea]   = useState(2.648);
-  const [irr,    setIrr]    = useState(1000);
-  const [tempC,  setTempC]  = useState(25);
-
-  const [n, setN]     = useState(1.3);
-  const [rs, setRs]   = useState(0.2);
-  const [rsh, setRsh] = useState(1000);
-  const [cellsSeries, setCellsSeries] = useState(144);
-  const [points, setPoints] = useState(140);
-
-  const model = useIVModel({
-    vocRef, iscRef, vmppRef, imppRef, area,
-    irr, tempC, n, rs, rsh, cellsSeries, points,
-  });
-
-  // ===== CHART 1: Curva base (I–V e P–V) em um gráfico (dois eixos Y) =====
-  const baseCanvasRef = useRef(null);
-  useChart(
-    baseCanvasRef,
-    () => {
-      const xs = model.base.pts.map(p => p.V);
-      return {
-        type: 'line',
-        data: {
-          labels: xs,
-          datasets: [
-            {
-              label: 'I (A)',
-              data: model.base.pts.map(p => p.I),
-              yAxisID: 'yI',
-              borderWidth: 2,
-              tension: 0.15,
-            },
-            {
-              label: 'P (W)',
-              data: model.base.pts.map(p => p.P),
-              yAxisID: 'yP',
-              borderWidth: 2,
-              tension: 0.15,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
-          interaction: { mode: 'index', intersect: false },
-          scales: {
-            x: { title: { display: true, text: 'Tensão (V)' } },
-            yI: { type: 'linear', position: 'left', title: { display: true, text: 'Corrente (A)' } },
-            yP: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Potência (W)' } },
-          },
-        },
-      };
-    },
-    [model.base.pts]
-  );
-
-  // ===== CHART 2: Séries por irradiância (25°C) =====
-  const irrCanvasRef = useRef(null);
-  const irrOrder = [1000, 800, 600, 400, 200];
-  const irrSeries = useMemo(
-    () => irrOrder.map(g => ({ g, curve: model.computeCurve(g, 25) })),
-    // dependências: mudança no modelo que altere curvas
-    [n, rs, rsh, cellsSeries, points, vocRef, iscRef]
-  );
-  useChart(
-    irrCanvasRef,
-    () => {
-      const vmax = Math.max(...irrSeries.map(s => s.curve.Vmax));
-      const baseX = Array.from({ length: 121 }, (_, i) => (i / 120) * vmax);
-      return {
-        type: 'line',
-        data: {
-          labels: baseX.map(v => +v.toFixed(2)),
-          datasets: irrSeries.map((s, idx, arr) => ({
-            label: `${s.g} W/m²`,
-            data: baseX.map(x => {
-              // interpola por busca do ponto mais próximo
-              const pts = s.curve.pts;
-              let j = Math.min(Math.floor((x / vmax) * pts.length), pts.length - 1);
-              if (j < 0) j = 0;
-              return pts[j].I;
-            }),
-            borderWidth: 2,
-            tension: 0.15,
-            borderColor: colorAt(idx, arr.length),
-          })),
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          plugins: { legend: { position: 'top' } },
-          scales: {
-            x: { title: { display: true, text: 'Tensão (V)' } },
-            y: { title: { display: true, text: 'Corrente (A)' } },
-          },
-        },
-      };
-    },
-    [irrSeries]
-  );
-
-  // ===== CHART 3: Séries por temperatura (G=1000 W/m²) =====
-  const tempCanvasRef = useRef(null);
-  const tempOrder = [75, 65, 55, 45, 35, 25];
-  const tempSeries = useMemo(
-    () => tempOrder.map(t => ({ t, curve: model.computeCurve(1000, t) })),
-    [n, rs, rsh, cellsSeries, points, vocRef, iscRef]
-  );
-  useChart(
-    tempCanvasRef,
-    () => {
-      const vmax = Math.max(...tempSeries.map(s => s.curve.Vmax));
-      const baseX = Array.from({ length: 121 }, (_, i) => (i / 120) * vmax);
-      return {
-        type: 'line',
-        data: {
-          labels: baseX.map(v => +v.toFixed(2)),
-          datasets: tempSeries.map((s, idx, arr) => ({
-            label: `Temp=${s.t}°C`,
-            data: baseX.map(x => {
-              const pts = s.curve.pts;
-              let j = Math.min(Math.floor((x / vmax) * pts.length), pts.length - 1);
-              if (j < 0) j = 0;
-              return pts[j].I;
-            }),
-            borderWidth: 2,
-            tension: 0.15,
-            borderColor: colorAt(idx, arr.length),
-          })),
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          plugins: { legend: { position: 'top' } },
-          scales: {
-            x: { title: { display: true, text: 'Tensão (V)' } },
-            y: { title: { display: true, text: 'Corrente (A)' } },
-          },
-        },
-      };
-    },
-    [tempSeries]
-  );
-
-  // KPIs
-  const iscAdj = useMemo(() => model.adjIsc(irr, tempC), [irr, tempC]);
-  const vocAdj = useMemo(() => model.adjVoc(irr, tempC), [irr, tempC]);
-  const ff = useMemo(() => model.mpp.P / Math.max(vocAdj * iscAdj, 1e-9), [model.mpp, vocAdj, iscAdj]);
-
-  return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-emerald-50 via-teal-50 to-white text-slate-800">
-      <header className="px-6 md:px-10 py-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-700">
-            Simulador Curva I–V • ELGIN ELG590-M72HEP
-          </h1>
-          <div className="hidden md:flex items-center gap-2 text-sm text-slate-500">
-            <span className="inline-block h-3 w-3 rounded-full bg-emerald-400 animate-pulse" /> cálculo em tempo real
-          </div>
+    <div id="app" class="min-h-screen">
+        <div class="w-full bg-white/80 border-b border-emerald-100">
+            <div class="px-6 md:px-10 py-2 text-[11px] md:text-xs text-center tracking-wide text-emerald-900 font-semibold">
+                UNIVERSIDADE FEDERAL DE ALAGOAS / PROGRAMA DE PÓS-GRADUAÇÃO EM ENERGIAS RENOVÁVEIS / DICIPLINA DE ENERGIA SOLAR FOTOVOLTAICA
+            </div>
         </div>
-        <p className="mt-1 text-sm text-slate-600">Ajuste os parâmetros à esquerda. Os gráficos e indicadores respondem instantaneamente.</p>
-      </header>
-
-      <main className="px-6 md:px-10 pb-16 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Painel lateral */}
-        <div className="lg:col-span-1 space-y-4">
-          <Section title="Condições de operação (curva base)">
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>Irradiância</Label><NumberInput value={irr} onChange={setIrr} min={1} max={1200} step={1} suffix="W/m²" /></div>
-              <div><Label>Temperatura módulo</Label><NumberInput value={tempC} onChange={setTempC} min={-20} max={85} step={0.1} suffix="°C" /></div>
+        <header class="px-6 md:px-10 py-6">
+            <div class="flex items-center justify-between">
+                <h1 class="text-2xl md:text-3xl font-bold tracking-tight text-emerald-700">Simulador Curva I–V • ELGIN ELG590-M72HEP</h1>
+                <div class="hidden md:flex items-center gap-2 text-sm text-slate-500">
+                    <span class="inline-block h-3 w-3 rounded-full bg-emerald-400 animate-pulse"></span> cálculo em tempo real
+                </div>
             </div>
-          </Section>
+            <p class="mt-1 text-sm text-slate-600">Ajuste os parâmetros à esquerda. O gráfico e os indicadores respondem instantaneamente.</p>
+        </header>
 
-          <Section title="Parâmetros do módulo (STC)">
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>Voc_ref</Label><NumberInput value={vocRef} onChange={setVocRef} min={0} max={100} step={0.01} suffix="V" /></div>
-              <div><Label>Isc_ref</Label><NumberInput value={iscRef} onChange={setIscRef} min={0} max={30} step={0.001} suffix="A" /></div>
-              <div><Label>Vmpp_ref</Label><NumberInput value={vmppRef} onChange={setVmppRef} min={0} max={100} step={0.01} suffix="V" /></div>
-              <div><Label>Impp_ref</Label><NumberInput value={imppRef} onChange={setImppRef} min={0} max={30} step={0.001} suffix="A" /></div>
-              <div className="col-span-2"><Label>Área</Label><NumberInput value={area} onChange={setArea} min={0.1} max={4} step={0.001} suffix="m²" /></div>
+        <main class="px-6 md:px-10 pb-16 grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Painel lateral - Coluna 1 -->
+            <div class="lg:col-span-1 space-y-4">
+                
+                <!-- Condições de Operação -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">Condições de operação (curva base)</h2>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-sm text-slate-600">Irradiância</label>
+                            <div class="flex items-center gap-2">
+                                <input id="input_irr" type="number" value="1000" min="1" max="1200" step="1" class="input-box" oninput="updateSimulation()">
+                                <span class="text-slate-500 text-sm w-10">W/m²</span>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-sm text-slate-600">Temperatura módulo</label>
+                            <div class="flex items-center gap-2">
+                                <input id="input_tempC" type="number" value="25" min="-20" max="85" step="0.1" class="input-box" oninput="updateSimulation()">
+                                <span class="text-slate-500 text-sm w-10">°C</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Parâmetros do Módulo (STC) -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">Parâmetros do módulo (STC)</h2>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div><label class="text-sm text-slate-600">Voc_ref</label><div class="flex items-center gap-2"><input id="input_vocRef" type="number" value="52.0" min="0" max="100" step="0.01" class="input-box" oninput="updateSimulation()"><span class="text-slate-500 text-sm w-10">V</span></div></div>
+                        <div><label class="text-sm text-slate-600">Isc_ref</label><div class="flex items-center gap-2"><input id="input_iscRef" type="number" value="14.31" min="0" max="30" step="0.001" class="input-box" oninput="updateSimulation()"><span class="text-slate-500 text-sm w-10">A</span></div></div>
+                        <div><label class="text-sm text-slate-600">Vmpp_ref</label><div class="flex items-center gap-2"><input id="input_vmppRef" type="number" value="43.55" min="0" max="100" step="0.01" class="input-box" oninput="updateSimulation()"><span class="text-slate-500 text-sm w-10">V</span></div></div>
+                        <div><label class="text-sm text-slate-600">Impp_ref</label><div class="flex items-center gap-2"><input id="input_imppRef" type="number" value="13.55" min="0" max="30" step="0.001" class="input-box" oninput="updateSimulation()"><span class="text-slate-500 text-sm w-10">A</span></div></div>
+                        <div class="col-span-2"><label class="text-sm text-slate-600">Área</label><div class="flex items-center gap-2"><input id="input_area" type="number" value="2.648" min="0.1" max="4" step="0.001" class="input-box" oninput="updateSimulation()"><span class="text-slate-500 text-sm w-10">m²</span></div></div>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-2">αIsc = +0,046 %/°C • βVoc = −0,26 %/°C • γPmp = −0,30 %/°C • Ns=144</p>
+                </div>
+
+                <!-- Modelo Elétrico -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">Modelo elétrico (1 diodo)</h2>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div><label class="text-sm text-slate-600">Idealidade do diodo (n)</label><div class="flex items-center gap-2"><input id="input_n" type="number" value="1.3" min="1" max="2" step="0.01" class="input-box" oninput="updateSimulation()"></div></div>
+                        <div><label class="text-sm text-slate-600">Resistência série (Rs)</label><div class="flex items-center gap-2"><input id="input_rs" type="number" value="0.2" min="0" max="1" step="0.001" class="input-box" oninput="updateSimulation()"><span class="text-slate-500 text-sm w-10">Ω</span></div></div>
+                        <div><label class="text-sm text-slate-600">Resistência shunt (Rsh)</label><div class="flex items-center gap-2"><input id="input_rsh" type="number" value="1000" min="1" max="50000" step="1" class="input-box" oninput="updateSimulation()"><span class="text-slate-500 text-sm w-10">Ω</span></div></div>
+                        <div><label class="text-sm text-slate-600">Células em série</label><div class="flex items-center gap-2"><input id="input_cellsSeries" type="number" value="144" min="36" max="200" step="1" class="input-box" oninput="updateSimulation()"></div></div>
+                        <div><label class="text-sm text-slate-600">Pontos da curva</label><div class="flex items-center gap-2"><input id="input_points" type="number" value="140" min="50" max="400" step="1" class="input-box" oninput="updateSimulation()"></div></div>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-2">Aderência fina depende de Rs, Rsh e n — ajuste conforme medição.</p>
+                </div>
+
+                <!-- Testes Automáticos -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">Testes automáticos (sanidade – curva base)</h2>
+                    <ul id="diagnostics-list" class="space-y-2">
+                        <!-- Resultados dos testes serão injetados aqui pelo JavaScript -->
+                    </ul>
+                </div>
             </div>
-            <p className="text-xs text-slate-500 mt-2">Ns=144 • αIsc=+0,046 %/°C • βVoc=−0,26 %/°C</p>
-          </Section>
 
-          <Section title="Modelo elétrico (1 diodo)">
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>n</Label><NumberInput value={n} onChange={setN} min={1} max={2} step={0.01} /></div>
-              <div><Label>Rs</Label><NumberInput value={rs} onChange={setRs} min={0} max={1} step={0.001} suffix="Ω" /></div>
-              <div><Label>Rsh</Label><NumberInput value={rsh} onChange={setRsh} min={1} max={50000} step={1} suffix="Ω" /></div>
-              <div><Label>Células (Ns)</Label><NumberInput value={cellsSeries} onChange={setCellsSeries} min={36} max={200} step={1} /></div>
-              <div><Label>Pontos</Label><NumberInput value={points} onChange={setPoints} min={50} max={400} step={1} /></div>
+            <!-- Coluna de Gráficos e Indicadores - Coluna 2 -->
+            <div class="lg:col-span-2 space-y-4">
+                
+                <!-- Curva base: I–V e P–V -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">Curva base: I–V e P–V (tempo real)</h2>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div id="chart-iv" class="chart-container h-80"></div>
+                        <div id="chart-pv" class="chart-container h-80"></div>
+                    </div>
+                </div>
+
+                <!-- I–V em diferentes irradiâncias -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">I–V em diferentes irradiâncias (T=25°C)</h2>
+                    <div id="chart-irradiance" class="chart-container h-96"></div>
+                    <!-- Legenda será inserida pelo JS, abaixo do gráfico -->
+                    <div id="legend-irradiance" class="mt-2 flex flex-wrap gap-x-6 gap-y-2 justify-start items-center"></div>
+                </div>
+
+                <!-- I–V em diferentes temperaturas -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">I–V em diferentes temperaturas (G=1000 W/m²)</h2>
+                    <div id="chart-temperature" class="chart-container h-96"></div>
+                    <!-- Legenda será inserida pelo JS, abaixo do gráfico -->
+                    <div id="legend-temperature" class="mt-2 flex flex-wrap gap-x-6 gap-y-2 justify-start items-center"></div>
+                </div>
+
+                <!-- Indicadores -->
+                <div class="bg-white/70 backdrop-blur border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                    <h2 class="text-emerald-700 font-semibold mb-3">Indicadores (curva base)</h2>
+                    <div id="indicators-grid" class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                        <!-- Indicadores serão injetados aqui pelo JavaScript -->
+                    </div>
+                </div>
             </div>
-          </Section>
+        </main>
 
-          <Section title="Indicadores (curva base)">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-gradient-to-br from-emerald-50 to-white border border-emerald-100 rounded-2xl p-4">
-                <div className="text-xs uppercase text-emerald-600">Ponto MPP</div>
-                <div className="text-sm">Vmpp ≈ <b>{model.mpp.V.toFixed(2)} V</b></div>
-                <div className="text-sm">Impp ≈ <b>{model.mpp.I.toFixed(2)} A</b></div>
-                <div className="text-lg font-bold text-emerald-700">Pmax ≈ {model.mpp.P.toFixed(1)} W</div>
-              </div>
-              <div className="bg-gradient-to-br from-cyan-50 to-white border border-cyan-100 rounded-2xl p-4">
-                <div className="text-xs uppercase text-cyan-600">Eficiência</div>
-                <div className="text-2xl font-bold text-cyan-700">{(model.eff * 100).toFixed(2)}%</div>
-                <div className="text-xs text-slate-500">Pin ≈ {Math.round(irr * area)} W</div>
-              </div>
-              <div className="bg-gradient-to-br from-teal-50 to-white border border-teal-100 rounded-2xl p-4 col-span-2">
-                <div className="text-xs uppercase text-teal-600">Limites</div>
-                <div className="text-sm">Voc ≈ <b>{model.base.VocG.toFixed(2)} V</b></div>
-                <div className="text-sm">Isc ≈ <b>{model.base.IL.toFixed(2)} A</b></div>
-                <div className="text-sm">FF ≈ <b>{(ff * 100).toFixed(1)}%</b></div>
-              </div>
+        <footer class="px-6 md:px-10 py-8 text-xs text-slate-500">
+            <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-2">
+                <div>Vanilla JS + Plotly • Tailwind • 1-diodo (Newton) • Projeto educacional</div>
+                <div class="text-slate-400">Pré-carregado: ELGIN ELG590-M72HEP • STC (1000 W/m², 25°C)</div>
             </div>
-          </Section>
-        </div>
-
-        {/* Gráficos */}
-        <div className="lg:col-span-2 space-y-4">
-          <Section title="Curva base: I–V e P–V (tempo real)">
-            <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-80">
-              <canvas ref={baseCanvasRef} className="w-full h-full"></canvas>
-            </div>
-          </Section>
-
-          <Section title="I–V em diferentes irradiâncias (T=25°C)">
-            <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-96">
-              <canvas ref={irrCanvasRef} className="w-full h-full"></canvas>
-            </div>
-          </Section>
-
-          <Section title="I–V em diferentes temperaturas (G=1000 W/m²)">
-            <div className="bg-white/70 border border-emerald-100 rounded-2xl p-3 h-96">
-              <canvas ref={tempCanvasRef} className="w-full h-full"></canvas>
-            </div>
-          </Section>
-        </div>
-      </main>
-
-      <footer className="px-6 md:px-10 py-6 text-xs text-slate-500 text-center">
-        React + Chart.js • Tailwind • 1-diodo (Newton) • Projeto educacional — Gustavo Santos Silva (2025)
-      </footer>
+            <div class="mt-3 text-right text-slate-600">Gustavo Santos Silva — 2025</div>
+        </footer>
     </div>
-  );
-}
+    
+    <script>
+        // ==========================================================
+        // LÓGICA DE SIMULAÇÃO (JS PURO)
+        // ==========================================================
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
+        // ===== Constantes físicas =====
+        const q = 1.602176634e-19; // C
+        const k = 1.380649e-23; // J/K
+
+        // ===== Parâmetros auxiliares STC =====
+        const Gref = 1000;
+        const Tref = 25;
+        const alphaIscPct = 0.046;
+        const betaVocPct = -0.26;
+        const alphaIsc = alphaIscPct / 100;
+        const betaVoc = betaVocPct / 100;
+
+        let state = {
+            // STC Parameters
+            vocRef: 52.0,
+            iscRef: 14.31,
+            vmppRef: 43.55,
+            imppRef: 13.55,
+            area: 2.648,
+            // Operating Conditions
+            irr: 1000,
+            tempC: 25,
+            // Model Parameters
+            n: 1.3,
+            rs: 0.2,
+            rsh: 1000,
+            cellsSeries: 144,
+            points: 140
+        };
+
+        // ===== Leitura de Inputs =====
+        function readInputs() {
+            const keys = Object.keys(state);
+            keys.forEach(key => {
+                const inputElement = document.getElementById(`input_${key}`);
+                if (inputElement) {
+                    state[key] = parseFloat(inputElement.value);
+                }
+            });
+        }
+
+        // ===== Ajustes Isc/Voc por (G,T) =====
+        function adjIsc(G, Tc) {
+            const dT = Tc - Tref;
+            return state.iscRef * (G / Gref) * (1 + alphaIsc * dT);
+        }
+
+        function adjVoc(G, Tc) {
+            const dT = Tc - Tref;
+            const thermal = state.vocRef * (1 + betaVoc * dT);
+            const nvt = state.n * ((k * (Tc + 273.15)) / q) * Math.max(state.cellsSeries, 1);
+            const logTerm = nvt * Math.log(Math.max(G, 1) / Gref);
+            return Math.max(thermal + logTerm, 0.1);
+        }
+
+        // ===== Curva I–V por (G,T) (Modelo de 1 Diodo) =====
+        function computeCurve(G, Tc) {
+            const Tkelvin = Tc + 273.15;
+            const VtC = (k * Tkelvin) / q;
+            const nvt = state.n * VtC * Math.max(state.cellsSeries, 1);
+            const IL = adjIsc(G, Tc);
+            const VocG = adjVoc(G, Tc);
+
+            const Io = (() => {
+                const denom = Math.exp(Math.max(VocG, 0) / Math.max(nvt, 1e-9)) - 1;
+                const numer = IL - VocG / Math.max(state.rsh, 1e-6);
+                const raw = denom > 0 ? numer / denom : 0;
+                return Math.max(raw, 1e-12);
+            })();
+
+            function solveI(V, Istart) {
+                let I = Math.min(Math.max(Istart, 0), Math.max(IL, 0));
+                for (let iter = 0; iter < 80; iter++) {
+                    const arg = (V + I * state.rs) / Math.max(nvt, 1e-9);
+                    const expArg = Math.exp(Math.min(Math.max(arg, -50), 50));
+                    const F = I - IL + Io * (expArg - 1) + (V + I * state.rs) / Math.max(state.rsh, 1e-9);
+                    const dF = 1 + Io * expArg * (state.rs / Math.max(nvt, 1e-9)) + state.rs / Math.max(state.rsh, 1e-9);
+                    const step = F / Math.max(dF, 1e-12);
+                    I -= step;
+                    if (!Number.isFinite(I)) { I = 0; break; }
+                    if (Math.abs(step) < 1e-8) break;
+                    if (I < -0.1) I = 0;
+                    if (I > IL * 1.2) I = IL * 1.2;
+                }
+                return Math.max(I, 0);
+            }
+
+            const Vmax = Math.max(VocG, state.vocRef) * 1.02;
+            const dV = Vmax / Math.max(state.points, 10);
+            const pts = [];
+            let Iprev = IL;
+            for (let i = 0; i <= state.points; i++) {
+                const V = i * dV;
+                const I = solveI(V, Iprev);
+                const P = V * I;
+                pts.push({ V, I, P });
+                Iprev = I;
+            }
+            return { pts, IL, VocG };
+        }
+
+        // ==========================================================
+        // FUNÇÕES DE RENDERIZAÇÃO E DIAGNÓSTICO
+        // ==========================================================
+
+        function renderDiagnostics(dataIV, iscAdj, vocAdj, mpp) {
+            const msgs = [];
+            
+            // 1) I(0) ≈ Isc
+            const iscApprox = dataIV[0]?.I ?? 0;
+            const okIsc = Math.abs(iscApprox - iscAdj) <= Math.max(0.5, 0.05 * Math.max(iscAdj, 1));
+            msgs.push({ ok: okIsc, msg: `I(0)≈Isc (${iscApprox.toFixed(2)}A vs ${iscAdj.toFixed(2)}A)` });
+
+            // 2) I(Voc) ≈ 0
+            const last = dataIV[dataIV.length - 1];
+            const iAtVoc = last?.I ?? 0;
+            const vocApprox = last?.V ?? 0;
+            const okVocI0 = Math.abs(iAtVoc) <= Math.max(0.3, 0.03 * Math.max(iscAdj, 1));
+            msgs.push({ ok: okVocI0, msg: `I(Voc)≈0 (${iAtVoc.toFixed(2)}A em Voc≈${vocApprox.toFixed(2)}V)` });
+
+            // 3) Monotonicidade (I não deve aumentar com V)
+            let mono = true;
+            for (let i = 1; i < dataIV.length; i++) {
+                if (dataIV[i].I - dataIV[i - 1].I > 1e-3) { mono = false; break; }
+            }
+            msgs.push({ ok: mono, msg: "I(V) não aumenta com V" });
+
+            // 4) MPP dentro de faixa (0<V<Voc, 0<I<Isc)
+            const okMpp = mpp.V > 0 && mpp.V < vocAdj && mpp.I > 0 && mpp.I < iscAdj;
+            msgs.push({ ok: okMpp, msg: `MPP válido (Vmpp=${mpp.V.toFixed(2)}V, Impp=${mpp.I.toFixed(2)}A)` });
+
+            // 5) Testes extras quando próximo a STC (±2% em G e ±1 °C)
+            const nearSTC = Math.abs(state.irr - 1000) <= 20 && Math.abs(state.tempC - 25) <= 1;
+            if (nearSTC) {
+                const okVmpp = Math.abs(mpp.V - state.vmppRef) <= 0.05 * Math.max(state.vmppRef, 1);
+                const okImpp = Math.abs(mpp.I - state.imppRef) <= 0.05 * Math.max(state.imppRef, 1);
+                msgs.push({ ok: okVmpp, msg: `Vmpp≈Vmpp_ref (${mpp.V.toFixed(2)}V vs ${state.vmppRef.toFixed(2)}V)` });
+                msgs.push({ ok: okImpp, msg: `Impp≈Impp_ref (${mpp.I.toFixed(2)}A vs ${state.imppRef.toFixed(2)}A)` });
+            }
+
+            const diagnosticsList = document.getElementById('diagnostics-list');
+            diagnosticsList.innerHTML = msgs.map((d, i) => `
+                <li class="text-sm ${d.ok ? 'text-emerald-700' : 'text-rose-700'}">
+                    <span class="inline-block w-2 h-2 rounded-full mr-2 ${d.ok ? 'bg-emerald-500' : 'bg-rose-500'}"></span>
+                    ${d.msg}
+                </li>
+            `).join('');
+        }
+
+        function renderIndicators(iscAdj, vocAdj, mpp) {
+            const ff = mpp.P / Math.max(vocAdj * iscAdj, 1e-9);
+            const Pin = state.irr * state.area;
+            const effNow = Pin > 0 ? mpp.P / Pin : 0;
+
+            const html = `
+                <div class="bg-gradient-to-br from-emerald-50 to-white border border-emerald-100 rounded-2xl p-4">
+                    <div class="text-xs uppercase text-emerald-600">Ponto MPP</div>
+                    <div class="text-sm text-slate-600">
+                        Vmpp ≈ <span class="font-semibold text-slate-800">${mpp.V.toFixed(2)} V</span>
+                    </div>
+                    <div class="text-sm text-slate-600">
+                        Impp ≈ <span class="font-semibold text-slate-800">${mpp.I.toFixed(2)} A</span>
+                    </div>
+                    <div class="text-lg font-bold text-emerald-700">Pmax ≈ ${mpp.P.toFixed(1)} W</div>
+                </div>
+                <div class="bg-gradient-to-br from-teal-50 to-white border border-teal-100 rounded-2xl p-4">
+                    <div class="text-xs uppercase text-teal-600">Limites</div>
+                    <div class="text-sm text-slate-600">
+                        Voc ≈ <span class="font-semibold text-slate-800">${vocAdj.toFixed(2)} V</span>
+                    </div>
+                    <div class="text-sm text-slate-600">
+                        Isc ≈ <span class="font-semibold text-slate-800">${iscAdj.toFixed(2)} A</span>
+                    </div>
+                    <div class="text-sm text-slate-600">
+                        FF ≈ <span class="font-semibold text-slate-800">${(ff * 100).toFixed(1)}%</span>
+                    </div>
+                </div>
+                <div class="bg-gradient-to-br from-cyan-50 to-white border border-cyan-100 rounded-2xl p-4">
+                    <div class="text-xs uppercase text-cyan-600">Eficiência instantânea</div>
+                    <div class="text-2xl font-bold text-cyan-700">${(effNow * 100).toFixed(2)}%</div>
+                    <div class="text-xs text-slate-500">Base: Pin = ${Math.round(state.irr * state.area)} W</div>
+                </div>
+            `;
+            document.getElementById('indicators-grid').innerHTML = html;
+        }
+
+        function plotCurve(divId, V_data, I_data, P_data, mpp) {
+            const isPV = divId === 'chart-pv';
+            const data = [
+                {
+                    x: V_data,
+                    y: isPV ? P_data : I_data,
+                    mode: 'lines',
+                    type: 'scatter',
+                    name: isPV ? 'P (W)' : 'I (A)',
+                    line: {
+                        color: isPV ? '#0ea5e9' : '#059669',
+                        width: 2
+                    }
+                },
+                {
+                    x: [mpp.V],
+                    y: [isPV ? mpp.P : mpp.I],
+                    mode: 'markers',
+                    type: 'scatter',
+                    name: isPV ? 'Pmax' : 'MPP',
+                    marker: {
+                        color: '#111827',
+                        size: 8,
+                        line: {
+                            color: 'white',
+                            width: 1
+                        }
+                    }
+                }
+            ];
+
+            const layout = {
+                margin: { l: 50, r: 20, t: 20, b: 50 },
+                xaxis: { title: 'Tensão (V)', hoverformat: '.2f' },
+                yaxis: { title: isPV ? 'Potência (W)' : 'Corrente (A)', hoverformat: '.2f' },
+                showlegend: false,
+                responsive: true,
+                height: 320,
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+            };
+
+            Plotly.react(divId, data, layout, {displayModeBar: false});
+        }
+
+        function plotMultiCurve(divId, series, isIrradiance = true) {
+            const data = series.map((s, index) => ({
+                x: s.curve.pts.map(p => p.V),
+                y: s.curve.pts.map(p => p.I),
+                mode: 'lines',
+                type: 'scatter',
+                name: isIrradiance ? `${s.g} W/m²` : `Temp=${s.t}°C`,
+                line: {
+                    color: s.color,
+                    width: 2
+                }
+            }));
+
+            const layout = {
+                margin: { l: 50, r: 20, t: 20, b: 50 },
+                xaxis: { title: 'Tensão (V)', hoverformat: '.2f' },
+                yaxis: { title: 'Corrente (A)', hoverformat: '.2f' },
+                showlegend: false, // Usaremos legenda HTML personalizada
+                responsive: true,
+                height: 384,
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+            };
+
+            Plotly.react(divId, data, layout, {displayModeBar: false});
+            
+            // Renderiza Legenda HTML
+            const legendDivId = isIrradiance ? 'legend-irradiance' : 'legend-temperature';
+            const legendDiv = document.getElementById(legendDivId);
+            legendDiv.innerHTML = series.map(s => `
+                <div class="flex items-center gap-2">
+                    <span class="inline-block w-3 h-3 rounded-full" style="background: ${s.color}"></span>
+                    <span class="text-sm text-slate-700 whitespace-nowrap">${isIrradiance ? `${s.g} W/m²` : `Célula Temp=${s.t}°C`}</span>
+                </div>
+            `).join('');
+        }
+
+        // ==========================================================
+        // MAIN FUNCTION
+        // ==========================================================
+        window.updateSimulation = function() {
+            readInputs();
+            
+            // 1. Curva Base
+            const baseCurve = computeCurve(state.irr, state.tempC);
+            const dataIV = baseCurve.pts;
+            
+            const mpp = dataIV.reduce((best, p) => (p.P > best.P ? p : best), { V: 0, I: 0, P: 0 });
+            const iscAdj = adjIsc(state.irr, state.tempC);
+            const vocAdj = adjVoc(state.irr, state.tempC);
+            
+            const V_data = dataIV.map(p => p.V);
+            const I_data = dataIV.map(p => p.I);
+            const P_data = dataIV.map(p => p.P);
+
+            // Renderiza gráficos base (I-V e P-V)
+            plotCurve('chart-iv', V_data, I_data, P_data, mpp);
+            plotCurve('chart-pv', V_data, I_data, P_data, mpp);
+
+            // Renderiza indicadores e diagnósticos
+            renderIndicators(iscAdj, vocAdj, mpp);
+            renderDiagnostics(dataIV, iscAdj, vocAdj, mpp);
+            
+            // 2. Curvas de Irradiância (T=25°C)
+            const irrOrder = [1000, 800, 600, 400, 200];
+            const irrSeries = irrOrder.map((g, idx, arr) => ({ 
+                g, 
+                color: `hsl(${Math.round((idx / arr.length) * 360)},70%,45%)`, 
+                curve: computeCurve(g, 25) 
+            }));
+            plotMultiCurve('chart-irradiance', irrSeries, true);
+
+            // 3. Curvas de Temperatura (G=1000 W/m²)
+            const tempOrder = [75, 65, 55, 45, 35, 25];
+            const tempSeries = tempOrder.map((t, idx, arr) => ({ 
+                t, 
+                color: `hsl(${Math.round((idx / arr.length) * 360)},70%,45%)`, 
+                curve: computeCurve(1000, t) 
+            }));
+            plotMultiCurve('chart-temperature', tempSeries, false);
+        };
+        
+        // Inicializa a simulação após o carregamento completo do Plotly
+        document.addEventListener('DOMContentLoaded', () => {
+            // Garante que o Plotly esteja carregado antes de chamar a simulação
+            // Em navegadores modernos, o script CDN carregará antes disso, mas é uma boa prática.
+            if (typeof Plotly !== 'undefined') {
+                updateSimulation();
+            } else {
+                console.error("Plotly.js não foi carregado.");
+            }
+        });
+    </script>
+</body>
+</html>
