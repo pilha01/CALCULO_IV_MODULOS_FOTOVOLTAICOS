@@ -2,6 +2,13 @@
 /* @jsxFrag React.Fragment */
 const { useMemo, useState, useEffect } = React;
 
+// <<< ADIÇÃO IMPORTANTÍSSIMA >>>
+const RechartsGlobal = window.Recharts;          // pega do global
+if (!RechartsGlobal) {
+  console.error("Recharts não carregou. Confira a ordem dos <script> no index.html.");
+}
+const Recharts = RechartsGlobal || {};           // fallback para evitar quebra na primeira linha
+
 // Pega componentes do bundle UMD do Recharts
 const {
   LineChart,
@@ -512,3 +519,4 @@ function IVCalculator() {
 // Monta o app
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<IVCalculator />);
+
