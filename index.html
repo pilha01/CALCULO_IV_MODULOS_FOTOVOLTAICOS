@@ -15,16 +15,17 @@
     <!-- PropTypes (necessário para Recharts UMD) -->
     <script crossorigin src="https://cdn.jsdelivr.net/npm/prop-types@15.8.1/prop-types.min.js"></script>
 
-    <!-- Recharts UMD: **fixado em 1.8.5** (estável com Babel Standalone) -->
+    <!-- Recharts UMD (versão estável 1.8.5 compatível com Babel Standalone) -->
     <script crossorigin src="https://cdn.jsdelivr.net/npm/recharts@1.8.5/umd/Recharts.min.js"></script>
 
-    <!-- Babel Standalone -->
+    <!-- Babel Standalone (compila JSX no navegador) -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   </head>
+
   <body class="bg-emerald-50">
     <div id="root"></div>
 
-    <!-- App JSX -->
+    <!-- App React (compilado no navegador) -->
     <script type="text/babel" src="./app.jsx" data-presets="env,react"></script>
   </body>
 </html>
